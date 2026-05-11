@@ -2,7 +2,6 @@ name: CI/CD workflow
 
 on: workflow_dispatch
 
-# Zmienne środowiskowe na poziomie workflow
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: sentiment-app-onnx
@@ -44,30 +43,10 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Delete stack if in rollback state
-        run: bash scripts/recover_rollback.sh
-        env:
-          STACK_NAME: sentiment-app-stack
-          AWS_REGION: ${{ env.AWS_REGION }}
-
-      - name: Resolve Lambda role ARN from name
-        id: lambda_role
-        run: bash scripts/resolve_lambda_role.sh
-        env:
-          ROLE_NAME: LabRole
-
-      - name: Deploy with AWS SAM
-        run: bash scripts/sam_deploy.sh
-        env:
-          STACK_NAME: sentiment-app-stack
-          AWS_REGION: ${{ env.AWS_REGION }}
-          IMAGE_REPOSITORY: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
-          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-          LAMBDA_ROLE_ARN: ${{ steps.lambda_role.outputs.role_arn }}
-
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
 
+      # 1. Najpierw przygotowujemy pliki modelu
       - name: Install deployment dependencies
         run: uv sync --group deployment
 
@@ -77,12 +56,14 @@ jobs:
       - name: Export model to ONNX
         run: uv run python -m src.scripts.export_zeroshot_to_onnx
 
+      # 2. Logujemy się do ECR, żeby pobrać adres rejestru (Registry URL)
       - name: Login to ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
         with:
           mask-password: "true"
 
+      # 3. Budujemy i wysyłamy obraz (teraz pliki ONNX już istnieją)
       - name: Build and Push Docker image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -92,3 +73,26 @@ jobs:
           docker build -t $REPOSITORY:$IMAGE_TAG .
           docker tag $REPOSITORY:$IMAGE_TAG $REGISTRY/$REPOSITORY:$IMAGE_TAG
           docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+
+      # 4. Rozwiązujemy rolę IAM i czyścimy ewentualny rollback
+      - name: Delete stack if in rollback state
+        run: bash scripts/recover_rollback.sh
+        env:
+          STACK_NAME: ${{ env.STACK_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+
+      - name: Resolve Lambda role ARN from name
+        id: lambda_role
+        run: bash scripts/resolve_lambda_role.sh
+        env:
+          ROLE_NAME: LabRole
+
+      # 5. Na samym końcu wdrażamy, używając gotowego obrazu z ECR
+      - name: Deploy with AWS SAM
+        run: bash scripts/sam_deploy.sh
+        env:
+          STACK_NAME: ${{ env.STACK_NAME }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          IMAGE_REPOSITORY: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          LAMBDA_ROLE_ARN: ${{ steps.lambda_role.outputs.role_arn }}
