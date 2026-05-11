@@ -5,7 +5,7 @@ on: workflow_dispatch
 # Zmienne środowiskowe na poziomie workflow
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: MLOps_lab11
+  ECR_REPOSITORY: mlops_lab11
 
 jobs:
   integration:
